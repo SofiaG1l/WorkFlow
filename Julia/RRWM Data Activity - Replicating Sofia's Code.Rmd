@@ -1,0 +1,250 @@
+---
+title: "RRWM Data Activity - Replicating Sofia's Code"
+author: "Julia"
+date: "21/09/2021"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# See notes/preliminary reflections at the bottom of this document.
+
+# Dataset
+
+Dataset being used: Canadian Community Health Survey (CCHS) - Mental Health, 2012
+
+Link to datset: https://abacus.library.ubc.ca/dataset.xhtml?persistentId=hdl:11272.1/AB2/2PSQXJ
+
+Dataset citation: Statistics Canada. Health Statistics Division, 2014, "Canadian Community Health Survey (CCHS) - Mental Health, 2012", https://hdl.handle.net/11272.1/AB2/2PSQXJ, Abacus Data Network, V1, UNF:6:NHaAsIbeTwjPzakM8IWR9w== [fileUNF]
+
+# Import the data
+- Install package: "haven"
+- Import the dataset into R
+```{r, echo = FALSE, warning = FALSE}
+# install.packages("haven")
+library(haven)
+library(tidyverse)
+cchs2012original <- read_sav("cchs2012_mh.sav")
+cchs2012 <- zap_labels(cchs2012original)
+```
+
+## Excluding Participants
+
+From the variable “PHSGAPA” (Moderate/vigorous physical activity -average/hours) drop those
+individuals whose content is “NOT STATED”.
+
+```{r}
+# The variable of interest is "PHSGAPA" 99.99 means "NOT STATED"
+cchs2012<-cchs2012%>%filter(PHSGAPA<99)
+```
+
+## Transforming variables
+
+### Transform the variable sex (DHH_SEX) into factor
+
+```{r}
+# Sex ---------------------------------------------------------------------
+cchs2012$DHH_SEX<-factor(cchs2012$DHH_SEX,
+                         levels = c(1,2),
+                         labels = c("MALE","FEMALE"))
+```
+
+### Transform the physical activity variable
+
+Create the variable “GROUP” by transforming “PHSGAPA” into the next categories:
+– “NOT” if they do 0 hours of exercise
+– “0%-25%” for those in the first quantile without considering those that do 0 hours of exercise.
+– “25-50” for those in the second quantile without considering those that do 0 hours of exercise.
+– “50-75” for those in the third quantile without considering those that do 0 hours of exercise.
+– “75-100” for those in the fourth quantile without considering those that do 0 hours of exercise.
+
+```{r}
+
+# Those that do not exercise = "NOT"
+noex <- cchs2012 %>%
+  filter(PHSGAPA==0)
+
+noex$GROUPS <- "NOT"
+# Those that DO exercise
+doex<-cchs2012 %>% 
+  filter(PHSGAPA>0)
+
+doex$GROUPS <- with(doex, cut(PHSGAPA,
+breaks = quant <- quantile(PHSGAPA),
+labels = paste0(names(quant)[-5],"-",names(quant)[-1]),
+include.lowest=TRUE))
+
+# Combine
+COMBINED <- rbind(noex,doex)
+
+```
+
+# Table
+
+Create a table that shows the percentage of population in each “GROUP” by age-groups breaking down
+by sex.
+
+```{r}
+A1 <- seq(15,80,5)
+A2 <- A1+4; A2[length(A2)]="more"
+Alabels <- paste0(A1,"-",A2)
+
+COMBINED$DHHGAGE <- factor(COMBINED$DHHGAGE,
+levels = 1:14,
+labels = Alabels)
+TABLE=COMBINED %>%
+  group_by(GROUPS,DHHGAGE,DHH_SEX)%>%
+  count(DHHGAGE,DHH_SEX)%>%
+  ungroup()%>%
+  group_by(GROUPS,DHH_SEX)%>%
+  mutate(perc=100*n/sum(n))
+```
+
+```{r}
+(TABLE %>%
+   ggplot() +
+   geom_tile(aes(GROUPS,DHHGAGE,fill= perc))+
+   geom_text(aes(GROUPS,DHHGAGE,label = round(perc, 1)),size=2.8) +
+   facet_grid(DHH_SEX~.)+
+   theme_minimal(base_size = 8)+
+   theme(axis.text.x = element_text(hjust = 0.5,size = 8),
+         axis.title = element_blank(),
+         legend.position= "right",
+         plot.caption = element_text(hjust =1,size = 8))+
+   scale_fill_distiller(palette = "Spectral",trans = 'log10')+
+   guides(fill=guide_colorbar(title = "%",
+                              title.position = "right",
+                              title.hjust = 0.5,
+                              barwidth = 0.5, barheight = 10,
+                              ticks.colour = "black",
+                              ticks.linewidth = 8,ticks = TRUE)))
+```
+
+Transform to NA all the values in “GEN_02A2”,“GEN_04”,“GEN_07”, and “GEN_10” that correspond
+to responds: “DON’T KNOW”, “REFUSAL”, and “NOT STATED”.
+
+```{r}
+VARIABLES<-c("GEN_02A2","GEN_04","GEN_07","GEN_10")
+
+cchs2012b <- cchs2012%>%
+  select(c("PHSGAPA","DHH_SEX","DHHGAGE", "GEN_02A2","GEN_04",
+           "GEN_07","GEN_10","GENDHDI"))
+
+# GEN_02A2: Satisfaction with life in general - 11 point scale GEN 11
+cchs2012b<-cchs2012b%>%mutate(GEN_02A2=ifelse(GEN_02A2<97,GEN_02A2,NA))
+
+# GEN_04: Frequency - trouble sleeping
+cchs2012b<-cchs2012b%>%mutate(GEN_04=ifelse(GEN_04<7,GEN_04,NA))
+
+# GEN_07: Perceived life stress
+cchs2012b<-cchs2012b%>%mutate(GEN_07=ifelse(GEN_07<7,GEN_07,NA))
+
+# GEN_10: Sense of belonging to local community 
+cchs2012b<-cchs2012b%>%mutate(GEN_10=ifelse(GEN_10<7,GEN_10,NA))
+
+# GENDHDI: Perceived health
+cchs2012b<-cchs2012b%>%mutate(GENDHDI=ifelse(GENDHDI<9,GENDHDI,NA))
+
+```
+
+
+
+# Linear Regression Table
+
+```{r}
+# Run a linear model where the outcome is “PHSGAPA” and the independent variables are “DHH_SEX”,“DHHGAGE”, “GEN_02A2”,“GEN_04”,“GEN_07”,“GEN_10”, and “GENDHDI”.
+
+fit <- lm(PHSGAPA~., data = cchs2012b)
+3
+SUM <- summary(fit)
+
+```
+Report the results as a table (Table 1) with the coefficients and their 95% confidence intervals, standard
+errors, p-values, and the standard p-value< ’*’ coding. Also rename the variables into more descriptive
+names:
+– DHH_SEXFEMALE: “Sex:Female”
+– DHHGAGE: “Age”
+– GEN_02A2: “Satif. Life”
+– GEN_04: “Trob. Sleep.”
+– GEN_07: “Life Stress”
+– GEN_10: “Sense Belong.”
+– GENDHDI: “Health”
+
+```{r}
+# install.packages("kableExtra")
+
+library(kableExtra)
+
+Coef <- coef(fit)
+# Confidence Interval
+conf<-confint(fit)
+CI1<-data.frame(lower=round(conf[,1],4),
+mean=round(Coef,4),
+upper=round(conf[,2],4))
+
+# SE
+CI1$SE <- SUM$coefficients[,2]
+
+# p-values
+p <- SUM$coefficients[,4]
+CI1$`p-value`=round(p,digits = 4)
+CI1$NAMES=row.names(CI1)
+CI<-rbind(CI1)
+CI$`p-value<`<-c("***","**","*","."," ")[findInterval(CI$`p-value` ,
+sort(c(1, 0.1, 0.05, 0.01, 0.001, 0))) ]
+CI<-CI[-1,]
+CI$NAMES <- factor(CI$NAMES,
+levels = rev(CI$NAMES),
+labels = rev(c("Sex:Female","Age","Satif. Life","Trob. Sleep.",
+"Life Stress","Sense Belong.","Health")))
+CI<-CI[,c(6,1:5,7)]
+row.names(CI) <- NULL
+
+kableExtra::kbl(CI, booktabs = T, caption="Results Liner Model") #%>%
+# kableExtra::kable_styling(position = "center")
+```
+
+# Plot the results
+```{r}
+library(ggplot2)
+
+ggplot(CI, aes(x=NAMES, y=mean,label=`p-value<`)) +
+  geom_errorbar(aes(ymin=lower, ymax=upper), width=.5,position = position_dodge(1)) +
+  geom_point(size=2,position = position_dodge(1))+
+  coord_flip()+
+  scale_x_discrete(labels = levels(CI$NAMES), breaks=levels(CI$NAMES),
+                   expand = c(0.1,0.1))+
+  geom_hline(yintercept = 0, linetype="dashed",color="red")+
+  theme(panel.spacing = unit(1, "lines"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "top",text = element_text(size = 10),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major.y = element_line(size = 0.25,
+                                          linetype = 'dashed',
+                                          colour = "gray"),
+        panel.grid.major.x = element_line(size = 0.25,
+                                          linetype = 'dashed',
+                                          colour = "gray"),
+        strip.background = element_rect(color = NA,
+                                        fill = NA, size = 1),
+        axis.line = element_line(color = 'black'),
+        plot.caption = element_text(hjust = 0.5,size = 10))+
+  geom_text(hjust=0, vjust=0,size=8,position = position_dodge(1))
+```
+
+# Notes:
+
+- General lack of knowledge about R --> reproducibility problems (on my end)
+- General lack of knowledge about functions to be used --> reproducibility problems (on my end)
+- Did most of the data cleaning and variable tranformations on my own, had to use Sofia's code to make the figures 
+- Would have been nice to know what packages in R to use to reproduce graphs
+- Transform the variable sex (DHH_SEX) into factor - Sex variable: Didn't know it should have been kept as 1 & 2, 
+(I changed it to 0 and 1 because that's what I normally do.)
+- Didn't have the color palette needed to recreate first table
+
